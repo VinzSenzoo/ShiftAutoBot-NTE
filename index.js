@@ -56,8 +56,6 @@ cfonts.say("NT Exhaust", {
   maxLength: "0",
 });
 console.log(centerText("=== Telegram Channel 🚀 : NT Exhaust (@NTExhaust) ==="));
-console.log(centerText("✪ COINSHIFT AUTO REGISTER ✪$\n"));
-
 
 let proxyUrl = null;
 let agent = null;
@@ -162,21 +160,18 @@ async function verifyTask(activityId, headers, privyIdToken) {
   try {
     const response = await axiosInstance.post("https://api.deform.cc/", payload, { headers: verifyHeaders });
     if (response.data.errors) {
-      console.error(chalk.red(`Verifikasi gagal untuk activityId: ${activityId}. Error: ${response.data.errors[0].message}`));
-      return false;
+      return { success: false, error: response.data.errors[0].message };
     }
 
     const verifyData = response.data.data ? response.data.data.verifyActivity : null;
     if (!verifyData || !verifyData.record) {
-      console.error(chalk.red(`Verifikasi gagal untuk activityId: ${activityId}. Tidak ada data record.`));
-      return false;
+      return { success: false, error: "Tidak ada data record" };
     }
 
     const status = verifyData.record.status;
-    return status.toUpperCase() === "COMPLETED";
+    return { success: status.toUpperCase() === "COMPLETED", error: null };
   } catch (err) {
-    console.error(chalk.red(`Error saat verifikasi activityId: ${activityId}. Error: ${err.message}`));
-    return false;
+    return { success: false, error: err.message };
   }
 }
 
@@ -258,78 +253,6 @@ async function performCheckIn(activityId, headers, privyIdToken) {
   } catch (err) {
     console.error(chalk.red(`Error saat check-in untuk activityId: ${activityId}: ${err.message}`));
     return null;
-  }
-}
-
-async function checkCheckInStatus(activityId, headers, privyIdToken) {
-  const payload = {
-    operationName: "Campaign",
-    variables: { campaignId: "b649b901-e4bf-462e-a41e-51691e8c4cea" },
-    query: `
-      fragment ActivityFields on CampaignActivity {
-        id
-        title
-        createdAt
-        records {
-          id
-          status
-          createdAt
-          __typename
-        }
-        __typename
-      }
-      query Campaign($campaignId: String!) {
-        campaign(id: $campaignId) {
-          activities {
-            ...ActivityFields
-            __typename
-          }
-          __typename
-        }
-      }`
-  };
-
-  const campaignHeaders = {
-    ...headers,
-    "privy-id-token": privyIdToken,
-    "origin": "https://campaign.coinshift.xyz",
-    "referer": "https://campaign.coinshift.xyz/"
-  };
-
-  try {
-    const response = await axiosInstance.post("https://api.deform.cc/", payload, { headers: campaignHeaders });
-    if (response.data.errors) {
-      console.error(chalk.red(`Error dari API Campaign: ${response.data.errors[0].message}`));
-      return "Error";
-    }
-
-    const campaignData = response.data.data?.campaign;
-    if (!campaignData) {
-      console.error(chalk.red("Data campaign tidak ditemukan dalam respons API."));
-      return "Error";
-    }
-
-    const dailyCheckin = campaignData.activities.find(act =>
-      act.title && act.title.toLowerCase().includes("daily check-in") && act.id === activityId
-    );
-
-    if (dailyCheckin && dailyCheckin.records && dailyCheckin.records.length > 0) {
-      const sortedRecords = dailyCheckin.records.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
-      const latestRecord = sortedRecords[0];
-      const recordDate = new Date(latestRecord.createdAt);
-      const today = new Date();
-      const isToday = recordDate.getUTCFullYear() === today.getUTCFullYear() &&
-                      recordDate.getUTCMonth() === today.getUTCMonth() &&
-                      recordDate.getUTCDate() === today.getUTCDate();
-      if (isToday && ["COMPLETED", "VERIFIED"].includes(latestRecord.status.toUpperCase())) {
-        return "Already check-in today";
-      }
-      return "Belum Check-in";
-    }
-    return "Belum Check-in";
-  } catch (err) {
-    console.error(chalk.red(`Error saat memeriksa status check-in: ${err.message}`));
-    return "Error";
   }
 }
 
@@ -490,13 +413,9 @@ async function runCycleOnce(walletKey) {
   }
   if (!campaignData) throw new Error("Data campaign tidak ditemukan");
 
-  let dailyCheckin = campaignData.activities.find(act =>
-    act.title && act.title.toLowerCase().includes("Daily check-in")
-  );
   let claimedTasks = [];
   let unclaimedTasks = [];
   campaignData.activities.forEach(act => {
-    if (dailyCheckin && act.id === dailyCheckin.id) return;
     if (act.records && act.records.length > 0 && act.records.some(record => ["COMPLETED", "VERIFIED"].includes(record.status.toUpperCase()))) {
       claimedTasks.push(act);
     } else {
@@ -505,47 +424,44 @@ async function runCycleOnce(walletKey) {
   });
 
   let checkinStatus = "Belum Check-in";
-  if (dailyCheckin) {
-    checkinStatus = await checkCheckInStatus(dailyCheckin.id, campaignHeaders, privyIdToken);
-    console.log(chalk.yellow(`Status Check-in dari Server: ${checkinStatus}`));
-    if (checkinStatus === "Belum Check-in") {
-      const spinnerCheckin = ora(chalk.cyan(`Melakukan check-in untuk: ${dailyCheckin.title}`)).start();
-      try {
-        const checkInResponse = await performCheckIn(dailyCheckin.id, campaignHeaders, privyIdToken);
-        spinnerCheckin.stop();
-        if (!checkInResponse) {
-          checkinStatus = "Check-in Gagal";
-          console.log(chalk.red("Check-in gagal: No response from server."));
-        } else if (
-          checkInResponse?.data?.verifyActivity?.record?.status?.toUpperCase() === "COMPLETED"
-        ) {
-          checkinStatus = "Check-in Berhasil";
-          dailyCheckin.records = [checkInResponse.data.verifyActivity.record];
-          console.log(chalk.green("Check-in berhasil dilakukan."));
-        } else if (
-          checkInResponse?.data?.errors?.some(err => 
-            err.message?.toLowerCase().includes("already checked in") ||
-            err.message?.toLowerCase().includes("already completed") ||
-            err.message?.toLowerCase().includes("already verified") ||
-            err.message?.toLowerCase().includes("cannot create new campaign spot record") ||
-            err.extensions?.clientFacingMessage?.toLowerCase().includes("user needs to wait before trying again")
-          )
-        ) {
-          checkinStatus = "Already check-in today";
-          console.log(chalk.green("Already check-in today."));
-        } else {
-          checkinStatus = "Check-in Gagal";
-          console.log(chalk.red("Check-in gagal, periksa koneksi atau server."));
-        }
-      } catch (err) {
-        spinnerCheckin.stop();
-        checkinStatus = "Check-in Gagal";
-        console.log(chalk.red("Check-in gagal: " + (err.response ? JSON.stringify(err.response.data) : err.message)));
-      }
-    }
+  const checkinActivityId = "304a9530-3720-45c8-a778-fbd3060d5cfd";
+  const isDailyCheckinClaimed = claimedTasks.some(task => task.title.toLowerCase().includes("daily check-in"));
+  if (isDailyCheckinClaimed) {
+    checkinStatus = "Already check-in today";
+    console.log(chalk.green("Already check-in today."));
   } else {
-    console.log(chalk.red("Aktivitas daily check-in tidak ditemukan."));
-    checkinStatus = "Tidak Tersedia";
+    const spinnerCheckin = ora(chalk.cyan(`Melakukan check-in untuk Daily Check-in`)).start();
+    try {
+      const checkInResponse = await performCheckIn(checkinActivityId, campaignHeaders, privyIdToken);
+      spinnerCheckin.stop();
+      if (!checkInResponse) {
+        checkinStatus = "Check-in Gagal";
+        console.log(chalk.red(`Check-in gagal: Tidak ada respons dari server.`));
+      } else if (
+        checkInResponse?.data?.verifyActivity?.record?.status?.toUpperCase() === "COMPLETED"
+      ) {
+        checkinStatus = "Check-in Berhasil";
+        console.log(chalk.green("Check-in berhasil dilakukan."));
+      } else if (
+        checkInResponse?.data?.errors?.some(err =>
+          err.message?.toLowerCase().includes("already checked in") ||
+          err.message?.toLowerCase().includes("already completed") ||
+          err.message?.toLowerCase().includes("already verified") ||
+          err.message?.toLowerCase().includes("cannot create new campaign spot record") ||
+          err.extensions?.clientFacingMessage?.toLowerCase().includes("user needs to wait before trying again")
+        )
+      ) {
+        checkinStatus = "Already check-in today";
+        console.log(chalk.green("Already check-in today."));
+      } else {
+        checkinStatus = "Check-in Gagal";
+        console.log(chalk.red(`Check-in gagal. Respons: ${JSON.stringify(checkInResponse)}`));
+      }
+    } catch (err) {
+      spinnerCheckin.stop();
+      checkinStatus = "Check-in Gagal";
+      console.log(chalk.red(`Check-in gagal: ${err.response ? JSON.stringify(err.response.data) : err.message}`));
+    }
   }
 
   console.log(chalk.magenta('\n==========================================================================='));
@@ -575,19 +491,14 @@ async function runCycleOnce(walletKey) {
   } else {
     for (const task of unclaimedTasks) {
       const spinnerTask = ora(chalk.cyan(`Verifying: ${task.title}`)).start();
-      try {
-        const verified = await verifyTask(task.id, campaignHeaders, privyIdToken);
-        spinnerTask.stop();
-        if (verified) {
-          console.log(chalk.green(`[VERIFIED] Task: ${task.title} => Claimed`));
-        } else {
-          console.log(chalk.red(`[UNVERIFIED] Task: ${task.title}`));
-        }
-      } catch (err) {
-        spinnerTask.stop();
-        console.error(chalk.red(`Error saat memproses task ${task.title}: ${err.message}`));
-        console.log(chalk.red(`[UNVERIFIED] Task: ${task.title}`));
+      const result = await verifyTask(task.id, campaignHeaders, privyIdToken);
+      spinnerTask.stop();
+      if (result.success) {
+        console.log(chalk.green(`[VERIFIED] Task: ${task.title} => Claimed`));
+      } else {
+        console.log(chalk.red(`[UNVERIFIED] Task: ${task.title} (Error: ${result.error})`));
       }
+      console.log(''); 
     }
   }
   console.log(chalk.magenta('------------------------------------------------------------------------\n'));
